@@ -32,6 +32,7 @@ Built with **MediaPipe** + **K-Nearest Neighbors (KNN)** + **FastAPI** backend a
 - Font Awesome 6 icons
 
 ## Project Structure
+```
 gesture_backend/
 ├── datasets/
 │   ├── gesture_landmarks.csv      # all collected landmark data
@@ -51,7 +52,7 @@ gesture_backend/
 ├── retrain.py                     # model training script
 ├── static_landmarks_dataset_collector.py  # legacy console collector
 └── requirements.txt
-
+```
 
 ## Installation & Setup
 
