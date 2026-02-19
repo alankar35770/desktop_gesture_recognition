@@ -2,7 +2,7 @@ window.onload = async () => {
     console.log("dashboard.js loaded");
     loadGestures();
     loadMappings();
-    setInterval(updateCurrentGesture, 800); // 800ms is more stable than 500ms
+    setInterval(updateCurrentGesture, 800);
 };
 
 async function startSystem() {
@@ -22,25 +22,12 @@ async function updateCurrentGesture() {
         const res = await fetch('/gesture');
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
-        document.getElementById('current-gesture').innerText = 
+        document.getElementById('current-gesture').innerText =
             `Current Gesture: ${data.gesture || 'None'} (${data.confidence.toFixed(1)}%)`;
     } catch (err) {
         console.error("Gesture fetch error:", err);
         document.getElementById('current-gesture').innerText = "Current Gesture: Error fetching";
     }
-}
-
-async function loadGestures() {
-    const res = await fetch('/gestures');
-    const gestures = await res.json();
-    const select = document.getElementById('gesture-select');
-    select.innerHTML = '<option value="">Select...</option>';
-    gestures.forEach(g => {
-        const opt = document.createElement('option');
-        opt.value = g;
-        opt.text = g;
-        select.appendChild(opt);
-    });
 }
 
 async function loadMappings() {
@@ -138,8 +125,8 @@ async function deleteGesture() {
         if (result.status === "success") {
             document.getElementById('output').innerText = result.message;
             document.getElementById('output').className = 'status success';
-            loadGestures();         // refresh both selects
-            loadMappings();         // refresh action mappings
+            loadGestures();
+            loadMappings();
         } else {
             document.getElementById('output').innerText = result.message || "Failed to delete gesture";
             document.getElementById('output').className = 'status error';
@@ -152,120 +139,180 @@ async function deleteGesture() {
 }
 
 
-// Browser-based recording with MediaPipe Hands JS
+// ─── GESTURE RECORDING ───────────────────────────────────────────────────────
 
+// Module-level recording state — never shadowed by local variables
+let recordingVideoEl  = null;
+let recordingCanvasEl = null;
+let recordingCtx      = null;
+let recordingCamera   = null;
 
-let handsInstance, videoEl, canvasEl, ctx, samples = 0, target = 0, collected = [];
-
-// async function startRecording() {
-//     const gesture = document.getElementById('gesture-name').value.trim();
-//     targetSamples = parseInt(document.getElementById('sample-count').value);
-//     if (!gesture) return alert('Enter gesture name');
-
-//     videoElement = document.getElementById('video');
-//     canvasElement = document.getElementById('canvas');
-//     canvasCtx = canvasElement.getContext('2d');
-
-    
-//     videoElement.style.display = 'none';
-//     canvasElement.style.display = 'block';
-
-//     try {
-//         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-//         videoElement.srcObject = stream;
-
-//         hands = new Hands({locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${file}`});
-//         hands.setOptions({
-//             maxNumHands: 1,
-//             modelComplexity: 1,
-//             minDetectionConfidence: 0.75,
-//             minTrackingConfidence: 0.75
-//         });
-//         hands.onResults(onResults);
-
-//         const camera = new Camera(videoElement, {
-//             onFrame: async () => {
-//                 await hands.send({image: videoElement});
-//             },
-//             width: 640,
-//             height: 480
-//         });
-//         camera.start();
-
-//         landmarksList = [];
-//         samplesCollected = 0;
-//         document.getElementById('progress').innerText = 'Progress: 0%';
-
-//     } catch (err) {
-//         console.error("Recording camera error:", err);
-//         alert("Failed to access camera: " + err.message);
-//     }
-// }
+let samples   = 0;
+let target    = 0;
+let collected = [];
 
 function onResultsHandler(results) {
-    ctx.save();
-    ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
-    ctx.drawImage(results.image, 0, 0, canvasEl.width, canvasEl.height);
+    if (!recordingCtx || !recordingCanvasEl) return;
+
+    recordingCtx.save();
+    recordingCtx.clearRect(0, 0, recordingCanvasEl.width, recordingCanvasEl.height);
+    recordingCtx.drawImage(results.image, 0, 0, recordingCanvasEl.width, recordingCanvasEl.height);
 
     if (results.multiHandLandmarks?.length > 0 && samples < target) {
         const landmarks = results.multiHandLandmarks[0];
-        // Simple visualization
         for (const lm of landmarks) {
-            const x = lm.x * canvasEl.width;
-            const y = lm.y * canvasEl.height;
-            ctx.beginPath();
-            ctx.arc(x, y, 4, 0, 2 * Math.PI);
-            ctx.fillStyle = '#00ff00';
-            ctx.fill();
+            const x = lm.x * recordingCanvasEl.width;
+            const y = lm.y * recordingCanvasEl.height;
+            recordingCtx.beginPath();
+            recordingCtx.arc(x, y, 4, 0, 2 * Math.PI);
+            recordingCtx.fillStyle = '#00ff00';
+            recordingCtx.fill();
         }
         collected.push(landmarks.map(lm => ({x: lm.x, y: lm.y, z: lm.z})));
         samples++;
-        document.getElementById('progress').innerText = `Progress: ${Math.round((samples / target) * 100)}%`;
+        document.getElementById('progress').innerText =
+            `Progress: ${Math.round((samples / target) * 100)}%`;
 
-        if (samples >= target) {
-            sendCollectedData();
-        }
+        if (samples >= target) sendCollectedData();
     }
-    ctx.restore();
+    recordingCtx.restore();
+}
+
+async function startRecording() {
+    const gesture = document.getElementById('gesture-name').value.trim();
+    target = parseInt(document.getElementById('sample-count').value);
+    if (!gesture) return alert('Enter gesture name');
+
+    // Assign to module-level vars — NOT local consts that would shadow them
+    recordingVideoEl  = document.getElementById('video');
+    recordingCanvasEl = document.getElementById('canvas');
+    recordingCtx      = recordingCanvasEl.getContext('2d');
+
+    // Reset counters BEFORE camera starts to avoid race condition
+    samples   = 0;
+    collected = [];
+    document.getElementById('progress').innerText = 'Progress: 0%';
+
+    // Hide permanent preview while recording
+    if (previewWrapper) {
+        previewWrapper.style.display = 'none';
+        previewStatus.innerText = 'Hidden during recording';
+    }
+
+    try {
+        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
+        recordingVideoEl.srcObject = stream;
+        recordingVideoEl.style.display = 'block';
+
+        const hands = new Hands({
+            locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${f}`
+        });
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.75,
+            minTrackingConfidence: 0.75
+        });
+        hands.onResults(results => {
+            recordingCtx.save();
+            recordingCtx.clearRect(0, 0, recordingCanvasEl.width, recordingCanvasEl.height);
+
+            // Mirror horizontally
+            recordingCtx.translate(recordingCanvasEl.width, 0);
+            recordingCtx.scale(-1, 1);
+            recordingCtx.drawImage(results.image, 0, 0, recordingCanvasEl.width, recordingCanvasEl.height);
+            recordingCtx.setTransform(1, 0, 0, 1, 0, 0);
+
+            if (results.multiHandLandmarks?.length > 0 && samples < target) {
+                const lm = results.multiHandLandmarks[0];
+                for (const p of lm) {
+                    const x = (1 - p.x) * recordingCanvasEl.width;
+                    const y = p.y * recordingCanvasEl.height;
+                    recordingCtx.beginPath();
+                    recordingCtx.arc(x, y, 5, 0, 2 * Math.PI);
+                    recordingCtx.fillStyle = '#00ff00';
+                    recordingCtx.fill();
+                }
+                collected.push(lm.map(p => ({x: 1 - p.x, y: p.y, z: p.z})));
+                samples++;
+                document.getElementById('progress').innerText =
+                    `Progress: ${Math.round((samples / target) * 100)}%`;
+
+                if (samples >= target) sendCollectedData();
+            }
+            recordingCtx.restore();
+        });
+
+        recordingCamera = new Camera(recordingVideoEl, {
+            onFrame: async () => await hands.send({ image: recordingVideoEl }),
+            width: 640,
+            height: 480
+        });
+        recordingCamera.start();
+
+    } catch (err) {
+        console.error("Recording error:", err);
+        alert("Camera access failed: " + err.message);
+    }
 }
 
 async function sendCollectedData() {
     const name = document.getElementById('gesture-name').value.trim();
+
     await fetch('/add_landmarks', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({gesture: name, landmarks: collected})
+        body: JSON.stringify({ gesture: name, landmarks: collected })
     });
-    document.getElementById('output').innerText = 'Gesture samples saved successfully';
-    document.getElementById('output').className = 'status success';
 
-    // Cleanup
-    videoEl.srcObject.getTracks().forEach(t => t.stop());
-    videoEl.style.display = 'none';
-    canvasEl.style.display = 'none';
-    loadGestures(); // refresh list
+    document.getElementById('output').innerText = 'Gesture saved successfully!';
+    document.getElementById('output').className = 'status success';
+    document.getElementById('progress').innerText = 'Capture: 100% ✓';
+
+    // Stop MediaPipe Camera instance first
+    if (recordingCamera) {
+        recordingCamera.stop();
+        recordingCamera = null;
+    }
+
+    // Stop webcam stream tracks — safe because we use the module-level var
+    if (recordingVideoEl && recordingVideoEl.srcObject) {
+        recordingVideoEl.srcObject.getTracks().forEach(t => t.stop());
+        recordingVideoEl.srcObject = null;
+        recordingVideoEl.style.display = 'none';
+    }
+
+    // Clear the canvas
+    if (recordingCtx && recordingCanvasEl) {
+        recordingCtx.clearRect(0, 0, recordingCanvasEl.width, recordingCanvasEl.height);
+    }
+
+    // Restore permanent preview if it was visible before recording
+    if (isPreviewVisible) {
+        previewWrapper.style.display = 'block';
+        previewStatus.innerText = 'Preview visible';
+        if (!isPreviewRunning) startPreview();
+    }
+
+    loadGestures();
 }
 
 
+// ─── LIVE PREVIEW ────────────────────────────────────────────────────────────
 
-
-// PERMANENT LIVE PREVIEW - raw camera OR landmarks
-
-
-let previewCanvas = null;
-let previewCtx = null;
-let previewHands = null;
-let previewCamera = null;
+let previewCanvas    = null;
+let previewCtx       = null;
+let previewHands     = null;
+let previewCamera    = null;
 let isPreviewVisible = false;
 let isPreviewRunning = false;
-let previewMode = 'raw'; // 'raw' or 'landmarks'
+let previewMode      = 'raw'; // 'raw' or 'landmarks'
 
 const previewToggleBtn = document.getElementById('toggle-live-preview');
-const previewStatus = document.getElementById('preview-status');
-const previewWrapper = document.getElementById('live-preview-wrapper');
-const previewInfo = document.getElementById('preview-info');
+const previewStatus    = document.getElementById('preview-status');
+const previewWrapper   = document.getElementById('live-preview-wrapper');
+const previewInfo      = document.getElementById('preview-info');
 
-// Toggle preview visibility
 if (previewToggleBtn) {
     previewToggleBtn.addEventListener('click', () => {
         isPreviewVisible = !isPreviewVisible;
@@ -277,7 +324,7 @@ if (previewToggleBtn) {
 
         previewStatus.innerText = isPreviewVisible ? 'Preview: visible' : 'Preview: hidden';
 
-        if (isPreviewVisible && system_running && !isPreviewRunning) {
+        if (isPreviewVisible && !isPreviewRunning) {
             startPreview();
         }
     });
@@ -287,18 +334,18 @@ async function startPreview() {
     if (isPreviewRunning) return;
 
     previewCanvas = document.getElementById('live-preview-canvas');
-    previewCtx = previewCanvas.getContext('2d');
+    previewCtx    = previewCanvas.getContext('2d');
 
     try {
         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
 
         const hiddenVideo = document.createElement('video');
-        hiddenVideo.width = 480;
-        hiddenVideo.height = 360;
-        hiddenVideo.autoplay = true;
+        hiddenVideo.width       = 480;
+        hiddenVideo.height      = 360;
+        hiddenVideo.autoplay    = true;
         hiddenVideo.playsinline = true;
-        hiddenVideo.muted = true;
-        hiddenVideo.srcObject = stream;
+        hiddenVideo.muted       = true;
+        hiddenVideo.srcObject   = stream;
         document.body.appendChild(hiddenVideo);
 
         if (previewMode === 'landmarks') {
@@ -320,7 +367,7 @@ async function startPreview() {
             previewCamera.start();
             previewInfo.innerText = 'Detecting hands...';
         } else {
-            // Raw mode: just mirror the video on canvas
+            // Raw mode: mirror the video onto canvas
             hiddenVideo.onloadedmetadata = () => {
                 function drawRaw() {
                     if (!hiddenVideo.srcObject) return;
@@ -351,7 +398,6 @@ function onPreviewLandmarks(results) {
     previewCtx.save();
     previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
 
-    // Flip horizontally
     previewCtx.translate(previewCanvas.width, 0);
     previewCtx.scale(-1, 1);
     previewCtx.drawImage(results.image, 0, 0, previewCanvas.width, previewCanvas.height);
@@ -379,113 +425,16 @@ function onPreviewLandmarks(results) {
 
 function stopPreview() {
     if (previewCamera) previewCamera.stop();
-    if (previewHands) previewHands.close();
-    if (previewCtx) previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
+    if (previewHands)  previewHands.close();
+    if (previewCtx)    previewCtx.clearRect(0, 0, previewCanvas.width, previewCanvas.height);
 
     isPreviewRunning = false;
-    previewInfo.innerText = 'Preview stopped';
+    if (previewInfo) previewInfo.innerText = 'Preview stopped';
 }
 
-// Recording - show ONLY landmarks canvas
-async function startRecording() {
-    const gesture = document.getElementById('gesture-name').value.trim();
-    target = parseInt(document.getElementById('sample-count').value);
-    if (!gesture) return alert('Enter gesture name');
 
-    const videoEl = document.getElementById('video');
-    const canvasEl = document.getElementById('canvas');
-    const ctx = canvasEl.getContext('2d');
+// ─── SYSTEM BUTTON HOOKS ─────────────────────────────────────────────────────
 
-    // Hide permanent preview while recording
-    if (previewWrapper) {
-        previewWrapper.style.display = 'none';
-        previewStatus.innerText = 'Hidden during recording';
-    }
-
-    document.getElementById('recording-preview').style.display = 'block';
-
-    try {
-        const stream = await navigator.mediaDevices.getUserMedia({ video: true });
-        videoEl.srcObject = stream;
-
-        const hands = new Hands({locateFile: f => `https://cdn.jsdelivr.net/npm/@mediapipe/hands@0.4/${f}`});
-        hands.setOptions({
-            maxNumHands: 1,
-            modelComplexity: 1,
-            minDetectionConfidence: 0.75,
-            minTrackingConfidence: 0.75
-        });
-        hands.onResults(results => {
-            ctx.save();
-            ctx.clearRect(0, 0, canvasEl.width, canvasEl.height);
-
-            // Mirror
-            ctx.translate(canvasEl.width, 0);
-            ctx.scale(-1, 1);
-            ctx.drawImage(results.image, 0, 0, canvasEl.width, canvasEl.height);
-            ctx.setTransform(1, 0, 0, 1, 0, 0);
-
-            if (results.multiHandLandmarks?.length > 0 && samples < target) {
-                const lm = results.multiHandLandmarks[0];
-                for (const p of lm) {
-                    const x = (1 - p.x) * canvasEl.width;
-                    const y = p.y * canvasEl.height;
-                    ctx.beginPath();
-                    ctx.arc(x, y, 5, 0, 2 * Math.PI);
-                    ctx.fillStyle = '#00ff00';
-                    ctx.fill();
-                }
-                collected.push(lm.map(p => ({x: 1 - p.x, y: p.y, z: p.z})));
-                samples++;
-                document.getElementById('progress').innerText = `Progress: ${Math.round((samples / target) * 100)}%`;
-
-                if (samples >= target) sendCollectedData();
-            }
-            ctx.restore();
-        });
-
-        const camera = new Camera(videoEl, {
-            onFrame: async () => await hands.send({image: videoEl}),
-            width: 640,
-            height: 480
-        });
-        camera.start();
-
-        samples = 0;
-        collected = [];
-
-    } catch (err) {
-        console.error("Recording error:", err);
-        alert("Camera access failed: " + err.message);
-    }
-}
-
-async function sendCollectedData() {
-    const name = document.getElementById('gesture-name').value.trim();
-    await fetch('/add_landmarks', {
-        method: 'POST',
-        headers: {'Content-Type': 'application/json'},
-        body: JSON.stringify({gesture: name, landmarks: collected})
-    });
-
-    document.getElementById('output').innerText = 'Gesture saved';
-    document.getElementById('output').className = 'status success';
-
-    // Cleanup
-    document.getElementById('video').srcObject?.getTracks().forEach(t => t.stop());
-    document.getElementById('recording-preview').style.display = 'none';
-
-    // Restore permanent preview if it was visible
-    if (isPreviewVisible && system_running) {
-        previewWrapper.style.display = 'block';
-        previewStatus.innerText = 'Preview visible';
-        startPreview();
-    }
-
-    loadGestures();
-}
-
-// Hook system buttons
 const origStart = startSystem;
 startSystem = async () => {
     await origStart();
