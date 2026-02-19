@@ -2,34 +2,106 @@ window.onload = async () => {
     console.log("dashboard.js loaded");
     loadGestures();
     loadMappings();
-    setInterval(updateCurrentGesture, 800);
     startLiveFeed();
 };
 
 // ─── SYSTEM ──────────────────────────────────────────────────────────────────
 
+// systemState: 'idle' | 'running' | 'paused' | 'stopped'
+let systemState = 'idle';
+
 async function startSystem() {
     await fetch('/start');
-    document.getElementById('output').innerText = 'System started';
-    document.getElementById('output').className = 'status success';
+    systemState = 'running';
+    addLog('System started — detecting & executing actions', 'success');
+    setSystemStatus('running');
+    if (!liveFeedRunning) startLiveFeed();  // restart camera if it was stopped
+}
+
+async function pauseSystem() {
+    if (systemState === 'stopped') return;
+    await fetch('/stop');   // tells backend to detect but not execute
+    systemState = 'paused';
+    addLog('System paused — detecting gestures only', 'info');
+    setSystemStatus('paused');
 }
 
 async function stopSystem() {
     await fetch('/stop');
-    document.getElementById('output').innerText = 'System stopped';
-    document.getElementById('output').className = 'status';
+    systemState = 'stopped';
+    addLog('System stopped — camera released', 'info');
+    setSystemStatus('stopped');
+    updateGestureDisplay(null, 0);
+    stopLiveFeed();   // fully release camera so indicator light goes off
 }
 
-async function updateCurrentGesture() {
+function updateGestureDisplay(gesture, confidence) {
+    const nameEl = document.getElementById('gesture-name-display');
+    const confEl = document.getElementById('gesture-conf-display');
+    if (gesture) {
+        nameEl.innerText = gesture;
+        confEl.innerText = `(${confidence.toFixed(1)}%)`;
+    } else {
+        nameEl.innerText = 'None';
+        confEl.innerText = '';
+    }
+}
+
+function setSystemStatus(state) {
+    const dot  = document.getElementById('system-dot');
+    const text = document.getElementById('system-status-text');
+    const states = {
+        idle:    { cls: '',        label: 'Idle'    },
+        running: { cls: 'active',  label: 'Running' },
+        paused:  { cls: 'paused',  label: 'Paused'  },
+        stopped: { cls: 'stopped', label: 'Stopped' },
+    };
+    const s = states[state] || states.idle;
+    dot.className  = `status-dot ${s.cls}`;
+    text.innerText = s.label;
+}
+
+async function sendLandmarksForPrediction(landmarks) {
     try {
-        const res = await fetch('/gesture');
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const res = await fetch('/predict', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ landmarks })
+        });
+        if (!res.ok) return;
         const data = await res.json();
-        document.getElementById('current-gesture').innerText =
-            `Current Gesture: ${data.gesture || 'None'} (${data.confidence.toFixed(1)}%)`;
+        updateGestureDisplay(data.gesture, data.confidence);
     } catch (err) {
-        console.error("Gesture fetch error:", err);
-        document.getElementById('current-gesture').innerText = "Current Gesture: Error fetching";
+        console.error("Predict error:", err);
+    }
+}
+
+
+// ─── ACTIVITY LOGS ───────────────────────────────────────────────────────────
+
+const LOG_MAX = 3;
+
+function addLog(message, type = 'info') {
+    const list = document.getElementById('log-list');
+    if (!list) return;
+
+    const icons = { success: 'fa-check-circle', error: 'fa-times-circle', info: 'fa-info-circle' };
+    const now   = new Date().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit', second:'2-digit'});
+
+    const entry = document.createElement('div');
+    entry.className = `log-entry ${type}`;
+    entry.innerHTML = `
+        <i class="fas ${icons[type] || icons.info} log-icon"></i>
+        <span class="log-text">${message}</span>
+        <span class="log-time">${now}</span>
+    `;
+
+    // Prepend so newest is on top
+    list.insertBefore(entry, list.firstChild);
+
+    // Keep only LOG_MAX entries
+    while (list.children.length > LOG_MAX) {
+        list.removeChild(list.lastChild);
     }
 }
 
@@ -61,12 +133,44 @@ async function loadGestures() {
 async function loadMappings() {
     const res = await fetch('/actions');
     const actions = await res.json();
-    const ul = document.querySelector('#current-mappings ul');
-    ul.innerHTML = '';
-    Object.entries(actions).forEach(([g, a]) => {
-        const li = document.createElement('li');
-        li.textContent = `${g} → ${a}`;
-        ul.appendChild(li);
+    renderMappings(actions);
+}
+
+function renderMappings(actions) {
+    const scroll  = document.getElementById('mappings-scroll');
+    const empty   = document.getElementById('mappings-empty');
+    const badge   = document.getElementById('mapping-count');
+    const entries = Object.entries(actions);
+
+    badge.textContent = entries.length;
+
+    // Remove all chips (keep the empty placeholder node)
+    scroll.querySelectorAll('.mapping-chip').forEach(el => el.remove());
+
+    if (entries.length === 0) {
+        empty.style.display = 'block';
+        return;
+    }
+
+    empty.style.display = 'none';
+
+    entries.forEach(([gesture, action]) => {
+        const chip = document.createElement('div');
+        chip.className = 'mapping-chip';
+        chip.dataset.gesture = gesture;
+
+        chip.innerHTML = `
+            <div class="chip-left">
+                <span class="chip-gesture" title="${gesture}">${gesture}</span>
+                <i class="fas fa-long-arrow-alt-right chip-sep"></i>
+                <span class="chip-action" title="${action}">${action.replace(/_/g, ' ')}</span>
+            </div>
+            <button class="chip-remove" title="Remove mapping" onclick="removeMapping('${gesture.replace(/'/g, "\\'")}')">
+                <i class="fas fa-times"></i>
+            </button>
+        `;
+
+        scroll.appendChild(chip);
     });
 }
 
@@ -74,14 +178,43 @@ async function updateAction() {
     const gesture = document.getElementById('gesture-select').value;
     const action  = document.getElementById('action-select').value;
     if (!gesture) return alert("Select a gesture first");
+
     await fetch('/update_action', {
         method: 'POST',
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({gesture, action})
     });
     loadMappings();
-    document.getElementById('output').innerText = 'Mapping updated';
-    document.getElementById('output').className = 'status success';
+    addLog(`Mapped: ${gesture} → ${action.replace(/_/g, ' ')}`, 'success');
+}
+
+async function removeMapping(gesture) {
+    try {
+        const res = await fetch('/remove_mapping', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({ gesture })
+        });
+        const result = await res.json();
+        if (result.status === "success") {
+            // Animate chip out
+            const chip = document.querySelector(`.mapping-chip[data-gesture="${CSS.escape(gesture)}"]`);
+            if (chip) {
+                chip.style.transition = 'opacity 0.2s, transform 0.2s';
+                chip.style.opacity    = '0';
+                chip.style.transform  = 'translateX(8px)';
+                setTimeout(() => loadMappings(), 220);
+            } else {
+                loadMappings();
+            }
+            addLog(`Mapping removed: ${gesture}`, 'success');
+        } else {
+            addLog(result.message || 'Failed to remove mapping', 'error');
+        }
+    } catch (err) {
+        console.error("Remove mapping error:", err);
+        addLog('Error removing mapping', 'error');
+    }
 }
 
 async function deleteGesture() {
@@ -97,25 +230,21 @@ async function deleteGesture() {
         });
         const result = await res.json();
         if (result.status === "success") {
-            document.getElementById('output').innerText = result.message;
-            document.getElementById('output').className = 'status success';
+            addLog(result.message, 'success');
             loadGestures();
             loadMappings();
         } else {
-            document.getElementById('output').innerText = result.message || "Failed to delete gesture";
-            document.getElementById('output').className = 'status error';
+            addLog(result.message || 'Failed to delete gesture', 'error');
         }
     } catch (err) {
         console.error("Delete error:", err);
-        document.getElementById('output').innerText = "Error deleting gesture";
-        document.getElementById('output').className = 'status error';
+        addLog('Error deleting gesture', 'error');
     }
 }
 
 async function retrainModel() {
     await fetch('/retrain', {method: 'POST'});
-    document.getElementById('output').innerText = 'Model retrained';
-    document.getElementById('output').className = 'status success';
+    addLog('Model retrained successfully', 'success');
 }
 
 async function updateThreshold() {
@@ -125,8 +254,7 @@ async function updateThreshold() {
         headers: {'Content-Type': 'application/json'},
         body: JSON.stringify({threshold})
     });
-    document.getElementById('output').innerText = 'Threshold updated';
-    document.getElementById('output').className = 'status success';
+    addLog(`Confidence threshold set to ${threshold}%`, 'success');
 }
 
 // ─── ALWAYS-ON LIVE FEED ─────────────────────────────────────────────────────
@@ -166,7 +294,7 @@ async function startLiveFeed() {
         });
 
         liveFeedHands.onResults(results => {
-            if (isRecording) return; // recording handler owns the canvas
+            if (isRecording) return;
 
             ctx.save();
             ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -185,6 +313,10 @@ async function startLiveFeed() {
                     ctx.fillStyle = '#7c83ff';
                     ctx.fill();
                 }
+                // Send raw (un-mirrored) landmarks to backend for KNN prediction
+                sendLandmarksForPrediction(lm.map(p => ({x: p.x, y: p.y, z: p.z})));
+            } else {
+                updateGestureDisplay(null, 0);
             }
             ctx.restore();
         });
@@ -197,7 +329,6 @@ async function startLiveFeed() {
         liveFeedCamera.start();
         liveFeedRunning = true;
 
-        // Show canvas, hide placeholder, update dot
         document.getElementById('canvas').style.display           = 'block';
         document.getElementById('feed-placeholder').style.display = 'none';
         document.getElementById('feed-dot').style.color           = 'var(--accent)';
@@ -217,7 +348,6 @@ function stopLiveFeed() {
 
     if (liveFeedVideo) {
         if (liveFeedVideo.srcObject) {
-            // Stop every track so the browser camera indicator light turns off
             liveFeedVideo.srcObject.getTracks().forEach(t => t.stop());
             liveFeedVideo.srcObject = null;
         }
@@ -227,7 +357,6 @@ function stopLiveFeed() {
 
     liveFeedRunning = false;
 
-    // Clear canvas and show placeholder
     const canvas = document.getElementById('canvas');
     const ctx    = canvas.getContext('2d');
     ctx.clearRect(0, 0, canvas.width, canvas.height);
@@ -238,42 +367,41 @@ function stopLiveFeed() {
 }
 
 // ─── FEED TOGGLE ─────────────────────────────────────────────────────────────
+// Toggle is visual-only: just hides/shows the canvas with a placeholder.
+// It has NO effect on the camera, MediaPipe, recording, or start/stop.
 
-let feedVisible = true;
 let isRecording = false;
 
 function toggleFeed(on) {
-    // During recording the feed must always stay on — snap toggle back
-    if (isRecording) {
-        document.getElementById('feed-toggle').checked = true;
-        return;
-    }
-
-    feedVisible = on;
-
+    const canvas      = document.getElementById('canvas');
+    const placeholder = document.getElementById('feed-placeholder');
+    const dot         = document.getElementById('feed-dot');
     if (on) {
-        startLiveFeed(); // restarts camera + MediaPipe from scratch
+        canvas.style.display      = 'block';
+        placeholder.style.display = 'none';
+        dot.style.color           = 'var(--accent)';
     } else {
-        stopLiveFeed();  // fully kills camera — indicator light goes off
+        canvas.style.display      = 'none';
+        placeholder.style.display = 'flex';
+        dot.style.color           = 'var(--muted)';
     }
 }
 
 function lockFeedOn() {
+    // Force feed visible during recording, disable toggle
     isRecording = true;
-    feedVisible = true;
-    const toggle    = document.getElementById('feed-toggle');
+    const toggle   = document.getElementById('feed-toggle');
     toggle.checked  = true;
     toggle.disabled = true;
-    document.getElementById('canvas').style.display           = 'block';
-    document.getElementById('feed-placeholder').style.display = 'none';
-    document.getElementById('feed-dot').style.color           = 'var(--accent)';
+    toggleFeed(true);
 }
 
 function unlockFeed() {
+    // Restore toggle after recording
     isRecording = false;
-    document.getElementById('feed-toggle').disabled = false;
-    // If user had toggled off before recording, respect that
-    if (!feedVisible) toggleFeed(false);
+    const toggle = document.getElementById('feed-toggle');
+    toggle.disabled = false;
+    toggleFeed(toggle.checked);
 }
 
 // ─── RECORDING ───────────────────────────────────────────────────────────────
@@ -309,8 +437,6 @@ async function startRecording() {
     collected = [];
     document.getElementById('progress').innerText = 'Progress: 0%';
 
-    // Stop live feed before recording takes over the canvas
-    // (recording uses its own camera stream at higher confidence)
     if (liveFeedRunning) stopLiveFeed();
 
     lockFeedOn();
@@ -374,8 +500,7 @@ async function startRecording() {
 
 function stopRecording() {
     cleanupRecording();
-    document.getElementById('output').innerText   = 'Recording stopped.';
-    document.getElementById('output').className   = 'status';
+    addLog('Recording stopped', 'info');
     document.getElementById('progress').innerText = 'Capture: 0%';
 }
 
@@ -393,10 +518,7 @@ function cleanupRecording() {
     }
 
     document.getElementById('stop-btn').style.display = 'none';
-
-    // unlockFeed checks feedVisible — if it was on before recording, restart live feed
     unlockFeed();
-    if (feedVisible) startLiveFeed();
 }
 
 async function sendCollectedData() {
@@ -408,8 +530,7 @@ async function sendCollectedData() {
         body: JSON.stringify({ gesture: name, landmarks: collected })
     });
 
-    document.getElementById('output').innerText   = 'Gesture saved successfully!';
-    document.getElementById('output').className   = 'status success';
+    addLog('Gesture saved successfully!', 'success');
     document.getElementById('progress').innerText = 'Capture: 100% ✓';
 
     cleanupRecording();

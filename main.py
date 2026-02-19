@@ -8,11 +8,10 @@ import json
 import os
 import csv
 
-from gesture_detector import detect_gesture, reload_model, CONFIDENCE_THRESHOLD
-from action_executor import execute_action, load_actions, update_action
+from gesture_detector import detect_gesture, predict_from_landmarks, reload_model, CONFIDENCE_THRESHOLD
+from action_executor import execute_action, load_actions, update_action, remove_action
 import retrain
 
-import cv2
 
 app = FastAPI()
 app.mount("/static", StaticFiles(directory="static"), name="static")
@@ -21,7 +20,6 @@ templates = Jinja2Templates(directory="templates")
 current_gesture = None
 current_confidence = 0
 system_running = False
-cap = None
 global_confidence_threshold = CONFIDENCE_THRESHOLD
 
 DATASET_DIR = "datasets"
@@ -45,25 +43,13 @@ def update_config(gesture):
         json.dump(config, f, indent=4)
 
 def camera_loop():
-    global current_gesture, current_confidence, system_running, cap
-    cap = cv2.VideoCapture(0)
-    print("Camera loop started")
+    # Camera loop is no longer used for detection.
+    # Landmarks are now sent directly from the browser via /predict.
+    global system_running
+    print("System ready - using browser-side MediaPipe for detection")
     while system_running:
-        ret, frame = cap.read()
-        if not ret:
-            time.sleep(0.05)
-            continue
-        frame = cv2.flip(frame, 1)
-        gesture, confidence = detect_gesture(frame)
-        current_gesture = gesture
-        current_confidence = confidence
-        if gesture and confidence > global_confidence_threshold:
-            execute_action(gesture)
-            time.sleep(0.5)  # debounce
-        time.sleep(0.01)  # prevent CPU overload
-    if cap:
-        cap.release()
-    print("Camera loop stopped")
+        time.sleep(1)
+    print("System stopped")
 
 @app.get("/")
 def home():
@@ -171,6 +157,17 @@ async def update_action_api(request: Request):
     update_action(gesture, action)
     return {"status": "action updated"}
 
+@app.post("/remove_mapping")
+async def remove_mapping_api(request: Request):
+    data = await request.json()
+    gesture = data.get("gesture")
+    if not gesture:
+        return JSONResponse({"status": "error", "message": "No gesture specified"})
+    success = remove_action(gesture)
+    if success:
+        return {"status": "success", "message": f"Mapping for '{gesture}' removed"}
+    return JSONResponse({"status": "error", "message": f"No mapping found for '{gesture}'"})
+
 
 @app.get("/gestures")
 def get_gestures():
@@ -192,3 +189,15 @@ async def update_confidence(request: Request):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run("main:app", host="127.0.0.1", port=8000, reload=True)
+
+@app.post("/predict")
+async def predict(request: Request):
+    global current_gesture, current_confidence
+    data = await request.json()
+    landmarks = data.get("landmarks")
+    gesture, confidence = predict_from_landmarks(landmarks)
+    current_gesture = gesture
+    current_confidence = confidence
+    if gesture and confidence > global_confidence_threshold and system_running:
+        execute_action(gesture)
+    return {"gesture": gesture, "confidence": confidence}
