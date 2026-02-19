@@ -1,0 +1,11 @@
+{
+    "palm": "volume_up",
+    "peace": "screenshot",
+    "up": "volume_up",
+    "down": "volume_down",
+    "left": "previous_window",
+    "right": "next_window",
+    "fist": "play_pause",
+    "V": "screenshot",
+    "thumbs_down": "open_chrome"
+}
