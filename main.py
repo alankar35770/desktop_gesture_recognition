@@ -9,6 +9,7 @@ import os
 import csv
 
 from gesture_detector import detect_gesture, predict_from_landmarks, reload_model, CONFIDENCE_THRESHOLD
+from landmark_utils import normalize_landmarks
 from action_executor import execute_action, load_actions, update_action, remove_action
 import retrain
 
@@ -145,7 +146,7 @@ async def add_landmarks(request: Request):
     with open(CSV_FILE, "a", newline="") as f:
         writer = csv.writer(f)
         for landmarks in landmarks_list:
-            flat = [coord for lm in landmarks for coord in [lm["x"], lm["y"], lm["z"]]]
+            flat = normalize_landmarks(landmarks).tolist()
             writer.writerow([gesture] + flat)
     return {"status": "landmarks added"}
 

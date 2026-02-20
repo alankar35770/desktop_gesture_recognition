@@ -8,6 +8,7 @@ from sklearn.model_selection import train_test_split
 from sklearn.preprocessing import StandardScaler
 from sklearn.neighbors import KNeighborsClassifier
 from sklearn.metrics import accuracy_score, classification_report
+from landmark_utils import normalize_landmarks_row
 
 DATASET_DIR = "datasets"
 MODELS_DIR = "models"
@@ -33,8 +34,9 @@ def load_dataset():
     if len(df) < 10:
         print("ERROR: Not enough samples.")
         return None, None, None
-    labels = df.iloc[:, 0]
-    features = df.iloc[:, 1:].values
+    labels      = df.iloc[:, 0]
+    raw         = df.iloc[:, 1:].values.astype(float)
+    features    = np.array([normalize_landmarks_row(row) for row in raw])
     class_names = sorted(labels.unique())
     label_to_index = {label: i for i, label in enumerate(class_names)}
     y = np.array([label_to_index[label] for label in labels])

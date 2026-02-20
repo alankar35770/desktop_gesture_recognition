@@ -7,6 +7,7 @@ __pycache__/
 venv/
 env/
 .env
+migrate_csv.py
 
 # VS Code
 .vscode/
@@ -17,4 +18,6 @@ env/
 *.tflite
 models/
 
+# dataset
+datasets/gesture_landmarks_backup.csv
 

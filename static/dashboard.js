@@ -259,10 +259,11 @@ async function updateThreshold() {
 
 // ─── ALWAYS-ON LIVE FEED ─────────────────────────────────────────────────────
 
-let liveFeedVideo   = null;
-let liveFeedCamera  = null;
-let liveFeedHands   = null;
-let liveFeedRunning = false;
+let liveFeedVideo     = null;
+let liveFeedCamera   = null;
+let liveFeedHands    = null;
+let liveFeedRunning  = false;
+let liveFeedOnResults = null;
 
 async function startLiveFeed() {
     if (liveFeedRunning) return;
@@ -288,14 +289,13 @@ async function startLiveFeed() {
         });
         liveFeedHands.setOptions({
             maxNumHands: 1,
-            modelComplexity: 1,
-            minDetectionConfidence: 0.7,
-            minTrackingConfidence: 0.7
+            modelComplexity: 0,
+            minDetectionConfidence: 0.6,
+            minTrackingConfidence: 0.5
         });
 
-        liveFeedHands.onResults(results => {
-            if (isRecording) return;
-
+        // Named function so recording cleanup can restore it
+        liveFeedOnResults = results => {
             ctx.save();
             ctx.clearRect(0, 0, canvas.width, canvas.height);
             ctx.translate(canvas.width, 0);
@@ -313,13 +313,14 @@ async function startLiveFeed() {
                     ctx.fillStyle = '#7c83ff';
                     ctx.fill();
                 }
-                // Send raw (un-mirrored) landmarks to backend for KNN prediction
                 sendLandmarksForPrediction(lm.map(p => ({x: p.x, y: p.y, z: p.z})));
             } else {
                 updateGestureDisplay(null, 0);
             }
             ctx.restore();
-        });
+        };
+
+        liveFeedHands.onResults(liveFeedOnResults);
 
         liveFeedCamera = new Camera(liveFeedVideo, {
             onFrame: async () => await liveFeedHands.send({ image: liveFeedVideo }),
@@ -424,25 +425,31 @@ async function startRecording() {
     recordingCanvasEl = document.getElementById('canvas');
     recordingCtx      = recordingCanvasEl.getContext('2d');
 
-    recordingVideoEl             = document.createElement('video');
-    recordingVideoEl.width       = 640;
-    recordingVideoEl.height      = 480;
-    recordingVideoEl.autoplay    = true;
-    recordingVideoEl.playsinline = true;
-    recordingVideoEl.muted       = true;
-    recordingVideoEl.style.cssText = 'position:fixed;width:0;height:0;opacity:0;pointer-events:none;';
-    document.body.appendChild(recordingVideoEl);
-
     samples   = 0;
     collected = [];
     document.getElementById('progress').innerText = 'Progress: 0%';
 
-    if (liveFeedRunning) stopLiveFeed();
-
     lockFeedOn();
     document.getElementById('stop-btn').style.display = 'inline-flex';
 
+    // Reuse the live feed if already running — no camera restart, no black frame.
+    // Just swap the onResults handler to recording mode.
+    if (liveFeedRunning && liveFeedHands) {
+        liveFeedHands.onResults(recordingOnResults);
+        return;
+    }
+
+    // Fallback: live feed not running, start a fresh camera for recording
     try {
+        recordingVideoEl             = document.createElement('video');
+        recordingVideoEl.width       = 640;
+        recordingVideoEl.height      = 480;
+        recordingVideoEl.autoplay    = true;
+        recordingVideoEl.playsinline = true;
+        recordingVideoEl.muted       = true;
+        recordingVideoEl.style.cssText = 'position:fixed;width:0;height:0;opacity:0;pointer-events:none;';
+        document.body.appendChild(recordingVideoEl);
+
         const stream = await navigator.mediaDevices.getUserMedia({ video: true });
         recordingVideoEl.srcObject = stream;
 
@@ -451,38 +458,11 @@ async function startRecording() {
         });
         recordingHands.setOptions({
             maxNumHands: 1,
-            modelComplexity: 1,
-            minDetectionConfidence: 0.75,
-            minTrackingConfidence: 0.75
+            modelComplexity: 0,
+            minDetectionConfidence: 0.65,
+            minTrackingConfidence: 0.5
         });
-
-        recordingHands.onResults(results => {
-            recordingCtx.save();
-            recordingCtx.clearRect(0, 0, recordingCanvasEl.width, recordingCanvasEl.height);
-            recordingCtx.translate(recordingCanvasEl.width, 0);
-            recordingCtx.scale(-1, 1);
-            recordingCtx.drawImage(results.image, 0, 0, recordingCanvasEl.width, recordingCanvasEl.height);
-            recordingCtx.setTransform(1, 0, 0, 1, 0, 0);
-
-            if (results.multiHandLandmarks?.length > 0 && samples < target) {
-                const lm = results.multiHandLandmarks[0];
-                for (const p of lm) {
-                    const x = (1 - p.x) * recordingCanvasEl.width;
-                    const y = p.y * recordingCanvasEl.height;
-                    recordingCtx.beginPath();
-                    recordingCtx.arc(x, y, 5, 0, 2 * Math.PI);
-                    recordingCtx.fillStyle = '#00ff00';
-                    recordingCtx.fill();
-                }
-                collected.push(lm.map(p => ({x: 1 - p.x, y: p.y, z: p.z})));
-                samples++;
-                document.getElementById('progress').innerText =
-                    `Progress: ${Math.round((samples / target) * 100)}%`;
-
-                if (samples >= target) sendCollectedData();
-            }
-            recordingCtx.restore();
-        });
+        recordingHands.onResults(recordingOnResults);
 
         recordingCamera = new Camera(recordingVideoEl, {
             onFrame: async () => await recordingHands.send({ image: recordingVideoEl }),
@@ -498,6 +478,34 @@ async function startRecording() {
     }
 }
 
+function recordingOnResults(results) {
+    recordingCtx.save();
+    recordingCtx.clearRect(0, 0, recordingCanvasEl.width, recordingCanvasEl.height);
+    recordingCtx.translate(recordingCanvasEl.width, 0);
+    recordingCtx.scale(-1, 1);
+    recordingCtx.drawImage(results.image, 0, 0, recordingCanvasEl.width, recordingCanvasEl.height);
+    recordingCtx.setTransform(1, 0, 0, 1, 0, 0);
+
+    if (results.multiHandLandmarks?.length > 0 && samples < target) {
+        const lm = results.multiHandLandmarks[0];
+        for (const p of lm) {
+            const x = (1 - p.x) * recordingCanvasEl.width;
+            const y = p.y * recordingCanvasEl.height;
+            recordingCtx.beginPath();
+            recordingCtx.arc(x, y, 5, 0, 2 * Math.PI);
+            recordingCtx.fillStyle = '#00ff00';
+            recordingCtx.fill();
+        }
+        collected.push(lm.map(p => ({x: 1 - p.x, y: p.y, z: p.z})));
+        samples++;
+        document.getElementById('progress').innerText =
+            `Progress: ${Math.round((samples / target) * 100)}%`;
+
+        if (samples >= target) sendCollectedData();
+    }
+    recordingCtx.restore();
+}
+
 function stopRecording() {
     cleanupRecording();
     addLog('Recording stopped', 'info');
@@ -505,9 +513,14 @@ function stopRecording() {
 }
 
 function cleanupRecording() {
+    // If we reused the live feed, just restore its onResults — no teardown needed
+    if (liveFeedRunning && liveFeedHands) {
+        liveFeedHands.onResults(liveFeedOnResults);
+    }
+
+    // Only tear down a separate recording camera if one was created
     if (recordingCamera) { recordingCamera.stop(); recordingCamera = null; }
     if (recordingHands)  { recordingHands.close();  recordingHands  = null; }
-
     if (recordingVideoEl) {
         if (recordingVideoEl.srcObject) {
             recordingVideoEl.srcObject.getTracks().forEach(t => t.stop());

@@ -1,10 +1,64 @@
 import ctypes
 ctypes.windll.user32.SetProcessDPIAware()
 from datetime import datetime
+import time
 import pyautogui
 import subprocess
 import json
 import os
+
+# Per-action cooldowns in seconds.
+# Actions not listed here fire every time (no cooldown).
+ACTION_COOLDOWNS = {
+    "screenshot":           2.0,
+    "play_pause":           1.5,
+    "next_track":           1.5,
+    "prev_track":           1.5,
+    "stop_media":           1.5,
+    "mute":                 1.5,
+    "mute_volume":          1.5,
+    "volume_up":            0.4,
+    "volume_down":          0.4,
+    "next_window":          0.8,
+    "prev_window":          0.8,
+    "previous_window":      0.8,
+    "minimize_window":      1.0,
+    "maximize_window":      1.0,
+    "close_window":         1.5,
+    "snap_left":            0.8,
+    "snap_right":           0.8,
+    "show_desktop":         1.0,
+    "task_view":            1.0,
+    "virtual_desktop_next": 0.8,
+    "virtual_desktop_prev": 0.8,
+    "lock_screen":          2.0,
+    "sleep":                3.0,
+    "brightness_up":        0.4,
+    "brightness_down":      0.4,
+    "scroll_up":            0.15,
+    "scroll_down":          0.15,
+    "scroll_left":          0.15,
+    "scroll_right":         0.15,
+    "page_up":              0.4,
+    "page_down":            0.4,
+    "browser_back":         0.8,
+    "browser_forward":      0.8,
+    "browser_refresh":      1.0,
+    "new_tab":              0.8,
+    "close_tab":            1.0,
+    "next_tab":             0.5,
+    "prev_tab":             0.5,
+    "reopen_tab":           1.0,
+    "copy":                 0.5,
+    "paste":                0.5,
+    "cut":                  0.5,
+    "undo":                 0.3,
+    "redo":                 0.3,
+    "select_all":           0.5,
+}
+
+# Tracks last execution time per action
+_last_executed: dict[str, float] = {}
 
 ACTION_FILE = "gesture_actions.json"
 
@@ -54,6 +108,16 @@ def execute_action(gesture):
         print(f"No action assigned to {gesture}")
         return
     action = actions[gesture]
+
+    # Enforce per-action cooldown
+    cooldown = ACTION_COOLDOWNS.get(action, 0)
+    if cooldown > 0:
+        now  = time.time()
+        last = _last_executed.get(action, 0)
+        if now - last < cooldown:
+            return   # still in cooldown, silently skip
+        _last_executed[action] = now
+
     print(f"Executing action: {action}")
 
     # ── Media ──

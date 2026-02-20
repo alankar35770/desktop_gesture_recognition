@@ -2,6 +2,7 @@ import pickle
 import json
 import numpy as np
 import os
+from landmark_utils import normalize_landmarks
 
 MODELS_DIR = "models"
 
@@ -41,14 +42,8 @@ def predict_from_landmarks(landmarks):
     if not landmarks or len(landmarks) != 21:
         return None, 0
 
-    features = []
-    for lm in landmarks:
-        features.append(lm["x"])
-        features.append(lm["y"])
-        features.append(lm["z"])
-
-    features    = np.array(features).reshape(1, -1)
-    features    = scaler.transform(features)
+    features = normalize_landmarks(landmarks).reshape(1, -1)
+    features = scaler.transform(features)
     prediction  = knn.predict(features)[0]
     probs       = knn.predict_proba(features)[0]
     confidence  = np.max(probs) * 100

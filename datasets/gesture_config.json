@@ -1,9 +1,12 @@
 {
     "gestures": [
-        "palm",
-        "thumbs_up",
         "up",
         "down",
-        "fist"
+        "left",
+        "right",
+        "fist",
+        "front_palm",
+        "back_palm",
+        "victory"
     ]
 }
