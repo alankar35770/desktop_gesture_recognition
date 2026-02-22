@@ -21,3 +21,4 @@ models/
 # dataset
 datasets/gesture_landmarks_backup.csv
 
+templates/test.html

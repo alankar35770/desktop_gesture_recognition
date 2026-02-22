@@ -70,10 +70,6 @@ project/
 └── requirements.txt
 ```
 
-> **Theme files** — rename whichever you prefer to `dashboard.html` inside `templates/`:
-> - `axiom.html` — precision instrument, electric teal, `Oxanium` + `DM Mono`
-> - `flux.html` — glassmorphism, aurora gradients, `Plus Jakarta Sans` + `Fira Code`
-> - `ghost.html` — editorial brutalism, monochrome, `Bebas Neue` + `IBM Plex Mono`
 
 ---
 
